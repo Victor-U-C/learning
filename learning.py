@@ -1,6 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
+import openai
+import re
 
 # ———— Page config ————
 st.set_page_config(page_title="Country Info Finder", page_icon="🌍", layout="centered")
@@ -68,46 +70,80 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ———— Function to get 2025 population ————
+def get_2025_population(country_name):
+    try:
+        openai.api_key = st.secrets["OPENAI_API_KEY"]
+
+        prompt = f"What is the current 2025 population of {country_name}? Please provide only the numerical value without any additional text or formatting."
+
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=50,
+            temperature=0
+        )
+
+        population_text = response.choices[0].message.content.strip()
+        numbers = re.findall(r'[\d,]+', population_text)
+        if numbers:
+            return int(numbers[0].replace(',', ''))
+    except Exception as e:
+        print(f"Error fetching 2025 population data: {e}")
+    return None
+
 # ———— Country Info Search ————
 country_name = st.text_input("Enter a country name", "")
 
 if country_name:
-    r = requests.get(f"https://restcountries.com/v3.1/name/{country_name}?fullText=true")
-    if r.status_code == 200:
-        data = r.json()[0]
-        name = data['name']['common']
-        st.subheader(f"Information about {name}")
+    try:
+        r = requests.get(f"https://restcountries.com/v3.1/name/{country_name}?fullText=true")
+        if r.status_code == 200:
+            data = r.json()[0]
+            name = data['name']['common']
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**Capital:** {', '.join(data.get('capital', ['N/A']))}")
-            st.markdown(f"**Region:** {data.get('region','N/A')}")
-            st.markdown(f"**Subregion:** {data.get('subregion','N/A')}")
-            st.markdown(f"**Area:** {data.get('area',0):,} km²")
-        with col2:
-            langs = data.get('languages', {})
-            st.markdown(f"**Languages:** {', '.join(langs.values())}")
-            if len(langs) == 1:
-                st.markdown("_Note: Only official languages are shown. Some speak many more._")
-            currencies = ", ".join(v['name'] for v in data.get('currencies', {}).values())
-            st.markdown(f"**Currency:** {currencies}")
-            maplink = data.get('maps', {}).get('googleMaps', "")
-            if maplink:
-                st.markdown(f"[📍 View on Google Maps]({maplink})")
+            st.subheader(f"Information about {name}")
 
-        flag = data['flags']['png']
-        st.markdown(
-            f"""
-            <div style="background-color: rgba(255,255,255,0.8); padding:10px; display:inline-block; border-radius:8px;">
-                <img src="{flag}" width="200"><br><strong>{name}</strong>
-            </div>
-            """, unsafe_allow_html=True
-        )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"Capital: {', '.join(data.get('capital', ['N/A']))}")
+                st.markdown(f"Region: {data.get('region','N/A')}")
+                st.markdown(f"Subregion: {data.get('subregion','N/A')}")
+                st.markdown(f"Area: {data.get('area',0):,} km²")
+            with col2:
+                langs = data.get('languages', {})
+                st.markdown(f"Languages: {', '.join(langs.values())}")
+                if len(langs) == 1:
+                    st.markdown("Note: Only official languages are shown.")
+                currencies = ", ".join(v['name'] for v in data.get('currencies', {}).values())
+                st.markdown(f"Currency: {currencies}")
+                maplink = data.get('maps', {}).get('googleMaps', "")
+                if maplink:
+                    st.markdown(f"[📍 View on Google Maps]({maplink})")
 
-        pop = data.get('population', 0)
-        st.markdown(f"📊 Based on last census, **{name}**'s population is **{pop:,}**.")
-    else:
-        st.error("Country not found. Please check spelling.")
+            flag = data['flags']['png']
+            st.markdown(
+                f"""
+                <div style="background-color: rgba(255,255,255,0.8); padding:10px; display:inline-block; border-radius:8px;">
+                    <img src="{flag}" width="200"><br><strong>{name}</strong>
+                </div>
+                """, unsafe_allow_html=True
+            )
+
+            population_2025 = get_2025_population(name)
+            if population_2025:
+                st.markdown(f"📊 2025 Population: **{population_2025:,}**")
+            else:
+                fallback_pop = data.get('population')
+                if fallback_pop:
+                    st.markdown(f"📊 Population: **{fallback_pop:,}** (estimate)")
+                else:
+                    st.markdown(f"📊 Population data not available.")
+
+        else:
+            st.error("Country not found. Please check spelling.")
+    except requests.RequestException:
+        st.error("Error connecting to country data service. Please try again.")
 
 # ———— Continent Explorer ————
 st.markdown("---")
@@ -120,11 +156,20 @@ if resp.status_code == 200:
     selected = st.selectbox("Choose a continent", [""] + continents)
     if selected:
         subset = [c for c in countries if c.get('region') == selected]
-        total = sum(c.get('population', 0) for c in subset)
+
+        total = 0
+        for c in subset:
+            country_name = c.get('name', {}).get('common', '')
+            pop_2025 = get_2025_population(country_name)
+            if pop_2025:
+                total += pop_2025
+            else:
+                total += c.get('population', 0)
+
         largest = max(subset, key=lambda c: c.get('area', 0), default={})
         largest_name = largest.get('name', {}).get('common', 'Unknown')
-        st.markdown(f"👥 Total population in **{selected}**: **{total:,}**")
-        st.markdown(f"📏 Largest country by area: **{largest_name}**")
+        st.markdown(f"👥 Total population in {selected}: **{total:,}**")
+        st.markdown(f"📏 Largest country by area: {largest_name}")
 
         coords = [c.get('latlng') for c in subset if c.get('latlng')]
         if coords:
